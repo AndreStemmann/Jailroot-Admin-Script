@@ -1,0 +1,1284 @@
+#!/bin/bash
+#
+# author: andre stemmann
+#
+# jailroot-toolkit.sh
+#
+#   cdebootstraps an debian system (technology called chroot/jailroot) in path "/data/jailroot/"
+#   creates users, related ssh/puTTY-keys,homefolder on host and handle security settings
+#   typical purpose is for data sharing and software staging (ideal sandbox)
+#
+#   This program is free software; you can redistribute it and/or modify it under
+#   the terms of the GNU General Public License as published
+#   by the Free Software Foundation; either version 2 of the License,
+#   or  (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program; if not, write to the Free Software
+#   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+
+
+# Return codes
+# ############
+# 1	TOO FEW ARGUMENTS
+# 2	cdebootstrap NOT FOUND
+# 3	cdebootstrap TOOL IS NOT AVAILABLE FOR YOUR OS
+# 4	TARGET DIRECTORY ALREADY EXISTS
+# 5	cdebootstrap FAULT
+# 6 CHROOT REMOVAL FAILS
+# 7 WRONG USER INPUT
+# 8 TARGET DOES NOT EXIST
+# 9 INSUFFIENT USER RIGHTS
+
+#
+# CHECK USER
+# user has to be root
+#
+d=$(date +%F-%H-%M)
+basename "$0"
+echo "Logging is enabled and output will be written to /var/log/jailroot-toolkit_${d}"
+echo " "
+sleep 3
+if [[ $(id -u -n) != "root" ]]; then
+  echo "The toolkit script must executed as user \"root\""
+  echo "...change user and run again"
+  sleep 3
+  echo " "
+  exit 9
+fi
+
+#
+# HELP
+# output the below text
+#
+function print_usage() {
+  #clear
+  echo "Description:"
+  echo "Jailroot-toolkit.sh"
+  echo "Cdebootstraps an whether an debian or an ubuntu system under /data/jailroot/ and creates initial user"
+  echo "Preconfigured for sharing files, as a software staging environment or for debian-based testing"
+  echo " "
+  echo "Menu points explained:"
+  echo "######################"
+  echo "1: Prepare the server to gain availability of chroot compatibility w/o installing an chroot"
+  echo "2: Make Server chroot compatible and installs an standard chroot environment"
+  echo "3: Same as option 2 & upgrade it to an Deploy-Jailroot"
+  echo "4: Creates a new user for an existing chroot"
+  echo "5: Update the installed OS within the jailroot (only install updates)"
+  echo "6: Upgrade the installed OS within the chroot (dist-upgrade)"
+  echo "7: Upgrade an existing chroot to an deploy-jailroot"
+  echo "8: Remove an existing chroot environment"
+  echo "9: Remove an chroot-user, as well as home-folder within chroot and on host"
+  echo "10: Same as 9 but for all users of one specific chroot"
+  echo "11: Shows this help"
+  echo "12: Quits the program"
+  echo " "
+  echo "Return codes"
+  echo "############"
+  echo "1	TOO FEW ARGUMENTS"
+  echo "2	cdebootstrap NOT FOUND"
+  echo "3	cdebootstrap TOOL IS NOT AVAILABLE FOR YOUR OS"
+  echo "4	TARGET DIRECTORY ALREADY EXISTS"
+  echo "5	cdebootstrap FAULT"
+  echo "6 CHROOT REMOVAL FAILS"
+  echo "7 WRONG USER INPUT"
+  echo "8 TARGET DIRECTORY DOES NOT EXIST"
+  echo "9 INSUFFIENT USER RIGHTS"
+  echo " "
+  echo "press enter to continue..."
+}
+
+#
+# PARAMETER INPUT
+# collect all user input
+#
+function path() {
+  dir=
+  echo " "
+  echo "Enter the full path to the new jailroot home directory"
+  echo "/data/jailroot is recommended as basepath"
+  echo "Using another basepath will crash the init.d-script"
+  read -p "e.g. /data/jailroot/my_chroot:  " dir
+}
+
+function user() {
+  echo " "
+  echo "Enter the new jailroot user"
+  read -p "e.g. testuser:  " user
+}
+
+function rw() {
+  echo " "
+  echo "Do you want to generate an additional R/W-user within the jailroot?"
+  read -p "(yes/no)?:  " rw
+}
+
+function ssh() {
+  echo " "
+  echo "Do you want to create an SSH-keypair for the new user?"
+  read -p "(yes/no)?:  " ssh
+  if [ "$ssh" = "yes" ];then
+    echo "The key will be stored under /data/keystore/"
+  fi
+}
+
+function putty() {
+  echo " "
+  echo "Do you want to create a puTTY-keypair for the new user?"
+  read -p "(yes/no)?:  " putty
+  if [ "$putty" = "yes" ];then
+    echo "The key will be stored under /data/keystore/"
+  fi
+}
+
+function os_version () {
+  echo " "
+  echo "Which OS do you want to install, Debian or Ubuntu?"
+  read -p "(debian/ubuntu)?:  " os_version
+}
+
+#
+# CHOOSE OS_RELEASE
+# shows all distro-specific versions offered by "distro-info-data"
+#
+function os_release () {
+  os=
+  if [[ $os_version == "debian" ]] ; then
+    echo "Select an available OS-Release for Debian"
+    oslist=( $(cut -d"," -f3 /usr/share/distro-info/debian.csv|tail -n +11|head -n 5) "quit" )
+  else
+    echo "Select an available OS-Release for Ubuntu"
+    oslist=( $(cut -d"," -f3 /usr/share/distro-info/ubuntu.csv|tail -n +11|head -n 15) "quit" )
+  fi
+
+  if [ "${#oslist[@]}" -eq "0" ]; then
+    echo "/usr/share/distro-info/*.csv is not in place"
+    echo "To proceed, please ensure that your host system is debian based"
+    sleep 5
+    echo "See main menu help (12) for further informations"
+  else
+    select os in "${oslist[@]}"
+    do
+      case $os in
+        "quit")
+          echo "exit"
+          exit 7
+          ;;
+        *)
+          if [ -z "$os" ]; then
+            echo "I'm sorry, Dave. I'm afraid I can't do that."
+            echo " "
+            sleep 5
+            exit 7
+          else
+            echo " You choose OS-release ${os_version} ${os}"
+            echo " "
+            sleep 5
+            os=$os
+            break
+          fi
+      esac
+    done
+  fi
+}
+
+#
+# CHOOSE JAILROOT
+# shows all existing jailroots in menu
+#
+function choose_jr() {
+  dir=
+  echo "Please select an already installed chroot or quit: "
+
+  jaillist=( $(tail -n +16 /etc/security/chroot.conf|cut -d" " -f2|sort|uniq) "quit" )
+  if [ "${#jaillist[@]}" -eq "0" ]; then
+    echo "/etc/security/chroot.conf is not in place"
+    echo "To proceed, please ensure that your server has chroot capability"
+    echo "See menu (1) for basic server setup..."
+    sleep 5
+    echo "...or help (12) for further informations"
+  else
+    select dir in "${jaillist[@]}"
+    do
+      case $dir in
+        "quit")
+          echo "exit"
+          exit 7
+          ;;
+        *)
+          if [ -z "$dir" ]; then
+            echo "I'm sorry, Dave. I'm afraid I can't do that."
+            sleep 5
+            exit 7
+          else
+            echo " You choose chroot ${dir}"
+            sleep 5
+            dir=$dir
+            break
+          fi
+      esac
+    done
+  fi
+}
+
+#
+# CHOOSE USER
+# shows all existing users configured to one jailroot in an menu
+#
+function choose_user() {
+  user=
+  echo "Please select an user or quit: "
+
+  userlist=( $(grep "${dir}" /etc/security/chroot.conf|cut -d" " -f1|sort) )
+  if [ "${#userlist[@]}" -eq "0" ]; then
+    echo "/etc/security/chroot.conf is not in place"
+    echo "To proceed, please ensure that your server has chroot capability"
+    echo "See menu (1) for basic server setup..."
+    sleep 5
+    echo "...or help (12) for further informations"
+  else
+    select user in "${userlist[@]}"
+    do
+      case $user in
+        "quit")
+          echo "exit"
+          exit 7
+          ;;
+        *)
+          if [ -z "$user" ]; then
+            echo "I'm sorry, Dave. I'm afraid I can't do that."
+            sleep 5
+            exit 7
+          else
+            echo " You choose user ${user}"
+            sleep 5
+            user=$user
+            break
+          fi
+      esac
+    done
+  fi
+}
+
+#
+# CREATE USER
+# creates system-user, chroot-user, ssh-keys and puTTY-keys
+#
+function user_creation() {
+  sleep 5
+  CHRT_DIR=$1
+  CHRT_USER=$2
+  CHRT_FLAG_GEN_OPENSSH=$3
+  CHRT_FLAG_GEN_PUTTY=$4
+  PATH_KEYSTORE="/data/keystore"
+  if [[ -z "$CHRT_DIR" ]] || [[ -z "${CHRT_USER}" ]] || [[ -z "${CHRT_FLAG_GEN_OPENSSH}" ]] || [[ -z "${CHRT_FLAG_GEN_PUTTY}" ]]; then
+    echo "Too few arguments!"
+    exit 1
+  fi
+
+  echo "Check for existing ${CHRT_USER} .."
+  /bin/egrep -q -i "^${CHRT_USER}:" /etc/passwd
+  if [ $? -eq 0 ]; then
+    echo "User ${CHRT_USER} already exist."
+    exit 2
+  fi
+
+  /bin/egrep -q -i "^${CHRT_USER}:" /etc/group
+  if [ $? -eq 0 ]; then
+    echo "Group ${CHRT_USER} already exist."
+    exit 3
+  fi
+
+  echo "Adding user ${CHRT_USER} .."
+  sleep 5
+  useradd -b "/home" -s "/bin/bash" -m "${CHRT_USER}"
+  # copy entry in group and passwd to chroot environment
+  grep "^${CHRT_USER}" /etc/passwd >> "${CHRT_DIR}"/etc/passwd
+  grep "^${CHRT_USER}" /etc/group >> "${CHRT_DIR}"/etc/group
+  # add user to chroot config file
+  cp /etc/security/chroot.conf /etc/security/chroot.conf.BAK_"${d}"
+  cat /etc/security/chroot.conf >> /etc/security/chroot.conf.new
+  echo "${CHRT_USER}" "${CHRT_DIR}" >> /etc/security/chroot.conf.new
+  mv /etc/security/chroot.conf.new /etc/security/chroot.conf
+  # double home directory to chroot environment
+  cp -Rp /home/"${CHRT_USER}" "${CHRT_DIR}"/home
+  if [ "$CHRT_FLAG_GEN_OPENSSH" == "yes" ]
+  then
+    # check for existing keystore path
+    test -d "${PATH_KEYSTORE}" || { mkdir -p ${PATH_KEYSTORE}; echo "Creating keystore path ${PATH_KEYSTORE} .."; }
+    sleep 5
+    # setup ssh environment for chroot user's keybased login
+    su -c "mkdir /home/${CHRT_USER}/.ssh && chmod 700 /home/${CHRT_USER}/.ssh && touch /home/${CHRT_USER}/.ssh/authorized_keys" "${CHRT_USER}"
+    echo "Generating OpenSSH keypair .."
+    ssh-keygen -t rsa -N "" -C "${CHRT_USER}"'@'"$(hostname)" -f "${PATH_KEYSTORE}"/"${CHRT_USER}"'.'"$(hostname)".id_rsa
+    echo "Copy public key to authorized_keys for user ${CHRT_USER} .."
+    if test -r "${PATH_KEYSTORE}"/"${CHRT_USER}"'.'"$(hostname)".id_rsa.pub
+    then
+      # creating monitoring key for icinga
+      cat "${PATH_KEYSTORE}"/"${CHRT_USER}"'.'"$(hostname)".id_rsa.pub >> /home/"${CHRT_USER}"/.ssh/authorized_keys
+    else
+      echo "Cannot find public key."
+    fi
+
+    if [ "$CHRT_FLAG_GEN_PUTTY" == "yes" ]
+    then
+      echo "Generating puTTY key .."
+      hash "puttygen" 2>/dev/null
+      if [ $? -eq 0 ]; then
+        puttygen "${PATH_KEYSTORE}"/"${CHRT_USER}"'.'"$(hostname)".id_rsa -O private -o "${PATH_KEYSTORE}"/"${CHRT_USER}"'.'"$(hostname)".ppk
+      else
+        echo "Puttygen not found. Puttykey will not be generated."
+      fi
+    fi
+    # add User definition to /etc/ssh/sshd_config
+    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.BAK_"${d}"
+    cat /etc/ssh/sshd_config >> /etc/ssh/sshd_config.new
+    echo "Will add User definition ${CHRT_USER} in sshd_config"
+    sleep 2
+    echo "#User definition ${CHRT_USER}" >> /etc/ssh/sshd_config.new
+    echo "Match User ${CHRT_USER}" >> /etc/ssh/sshd_config.new
+    echo "    X11Forwarding no" >> /etc/ssh/sshd_config.new
+    echo "    AllowTcpForwarding no" >> /etc/ssh/sshd_config.new
+    mv /etc/ssh/sshd_config.new /etc/ssh/sshd_config
+    # finish changing sshd_config
+    # ask if you want to restart the ssh daemon
+    while true
+    do
+      echo "Do you want to restart the SSH daemon now to taking the changes live?"
+      echo " "
+      sleep 5
+      echo "Consider, that a SSH-restart may kill your connection to the Server"
+      sleep 5
+      echo " "
+      read -p "Whether type Yes/No/Dump (dump to show sshd-config) " restartssh
+      echo " "
+      rstrtssh=0
+      case "$restartssh" in
+        [yY]* ) echo "yes"
+          rstrtssh=1
+          break;;
+        [nN]* )
+          echo "no"
+          break;;
+        [dD]* )
+          cat /etc/ssh/sshd_config
+          ;;
+        *) echo "Invalid, please answer Yes or No";;
+      esac
+    done
+
+    if [ "$rstrtssh" -eq 1 ] ; then
+      echo "OK, I will restart the SSH-daemon now"
+      echo " "
+      sleep 5
+      /bin/bash /etc/init.d/ssh restart
+    else
+      echo "Well, then you have to restart the SSH-daemon on your own"
+      echo " "
+      sleep 5
+    fi
+  fi
+  echo "Your new user ${CHRT_USER} has been created"
+  sleep 5
+}
+
+#
+# CREATE RW-USER
+# creates dedicated system-user, chroot-user, ssh-keys and puTTY-keys for data-delivery user account
+#
+function rw_creation() {
+  if [ "$rw" == "yes" ];
+  then
+    sleep 5
+    test ! -d "${dir}" && { echo "${dir} does not exists. Won't add user" ; exit 8; }
+    user_creation "${dir}" "${user}"-feed  "${ssh}" "${putty}"
+    usermod -g "${user}" -G "${user}"-feed "${user}"-feed
+    # revoke jailroot-user write permission in home directory
+    chown "${user}"-feed "${dir}"/home/"${user}"
+    echo "Your new user ${user}-feed has been created"
+    echo "Waiting 5 seconds .."
+    sleep 5
+  else
+    echo "No additional RW-user is requested...going on w/o RW-user."
+    sleep 5
+  fi
+}
+
+#
+# BASIC INSTALLATION
+# ensure toolset is installed and configs are prepared and in place for chroot
+# also creates an init script to start/stop jailroots by init.d
+#
+function basic_setup() {
+  echo "----Going to install the basic setup for chroot environments"
+  sleep 5
+  apt-get update
+  # add additional proggs here
+  echo " "
+  echo "----basic toolset will be installed on host"
+  echo " "
+  tools=(
+  "libpam-chroot"
+  "debootstrap"
+  "cdebootstrap"
+  "putty-tools"
+  "openssh-server"
+  "openssh-client"
+  "lsof"
+  "coreutils"
+  "grep"
+  "distro-info-data"
+  )
+
+  # check if all needed tools are in place
+  for tool in "${tools[@]}"
+  do
+    dpkg -l|grep "$tool" >/dev/null 2>&1
+    if [ $? -ne 0 ] || [ -z "$tool" ]; then
+      apt-get install "$tool" -y -qq
+    else
+      echo "$tool is already installed"
+      sleep 3
+    fi
+  done
+  #
+  # SSH CONFIG
+  # ensure jailroot group & security
+  echo " "
+  echo "----/etc/pam.d/sshd will be prepared"
+  echo " "
+  sleep 3
+  # search where pam_chroot.so is not a comment and add values to tmp config file
+  # afterwards making changes atomic by move tmp file to live-config
+  cat /etc/pam.d/sshd > /etc/pam.d/sshd.new
+  if ! grep -Ei --quiet '^[^#]*session[[:space:]]+required[[:space:]]+pam_chroot.so' /etc/pam.d/sshd ; then
+    echo " "
+    echo "config parameter for pam.d missing, will add pam_chroot.so to /etc/pam.d/sshd"
+    echo " "
+    echo "session    required   pam_chroot.so" >> /etc/pam.d/sshd.new
+    mv /etc/pam.d/sshd.new /etc/pam.d/sshd
+    echo " "
+    while true
+    do
+      echo " "
+      echo "Do you want to take a look at /etc/pam.d/sshd now?"
+      sleep 5
+      read -p "Whether type Yes or No: " showpam
+      echo " "
+      case "$showpam" in
+        [yY]* )
+          echo "yes"
+          cat /etc/pam.d/sshd
+          echo " "
+          ;;
+        [nN]* )
+          echo "no"
+          break;;
+        *) echo "Invalid, please answer Yes or No";;
+      esac
+    done
+    echo " "
+  else
+    echo " "
+    echo "pam.d/sshd config is fine, will go on and prepare chroot.conf"
+    echo " "
+    echo "----/etc/security/chroot.conf"
+    echo " "
+    cp /etc/security/chroot.conf /etc/security/chroot.conf.BAK_"${d}"
+    echo "# This File is managed by Jailroot-Toolkit.sh" > /etc/security/chroot.conf.new
+    echo "# Do not edit this file by hand otherwise the user-management could break" >> /etc/security/chroot.conf.new
+    cat /etc/security/chroot.conf >> /etc/security/chroot.conf.new
+    mv /etc/security/chroot.conf.new /etc/security/chroot.conf
+    echo "/etc/security/chroot.config is fine, will go on and check ssh/sshd config"
+    echo " "
+    sleep 3
+  fi
+
+  while true
+  do
+    echo " "
+    echo "IMPORTANT"
+    echo "#########"
+    sleep 3
+    echo " "
+    echo "Do you use puppet or any other config mgmt. software to configure your sshd_config?"
+    echo " "
+    sleep 3
+    read -p "Whether type Yes or No: " usepuppet
+    echo " "
+    puppetuse=0
+    case "$usepuppet" in
+      [yY]* )
+        echo "yes"
+        puppetuse=1
+        ;;
+      [nN]* )
+        echo "no"
+        break;;
+      *) echo "Invalid, please answer Yes or No";;
+    esac
+  done
+  echo " "
+  if [ $puppetuse -eq 0 ]; then
+    echo "----/etc/ssh/sshd_config will be prepared"
+    echo " "
+    sleep 3
+    # search where "Subsystem sftp" is not a comment in /etc/ssh/sshd_config
+    # and add new values to tmp config file if not already in place
+    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.BAK_"${d}"
+    echo "# This File is managed by Jailroot-Toolkit.sh" > /etc/ssh/sshd_config.new
+    echo "# Do not edit this file by hand otherwise the user-management could break" >> /etc/ssh/sshd_config.new
+    cat /etc/ssh/sshd_config >> /etc/ssh/sshd_config.new
+    mv /etc/ssh/sshd_config.new /etc/ssh/sshd_config
+    if grep -Eiv --quiet '^[^#]*subsystem[[:space:]]+sftp' /etc/ssh/sshd_config ; then
+      echo "Subsystem sftp is set already"
+      echo " "
+      sleep 5
+    else
+      echo "No subsystem sftp found in /etc/ssh/sshd_config will add it"
+      echo " "
+      echo " " >> /etc/ssh/sshd_config.new
+      echo "Subsystem       sftp    internal-sftp" >> /etc/ssh/sshd_config.new
+      cat /etc/ssh/sshd_config >> /etc/ssh/sshd_config.new
+      mv /etc/ssh/sshd_config.new /etc/ssh/sshd_config
+    fi
+    if grep -Eiv --quiet '^[^#]*subsystem[[:space:]]+sftp[[:space:]]+internal-sftp' /etc/ssh/sshd_config ; then
+      echo "Will change Subsystem sftp to internal-sftp now"
+      echo " "
+      sleep 5
+      sed -ri 's/(Subsystem\s+sftp\s+)[^S]*$/\1  internal-sftp/' /etc/ssh/sshd_config
+    else
+      echo "Subsystem sftp already internal-sftp. Not changing anything here"
+      echo " "
+      sleep 5
+    fi
+    # add Group definition: "sftp-chroot"
+    if grep -Ei --quiet '^#.*?Group[[:space:]]+definition[[:space:]]+sftp-chroot' /etc/ssh/sshd_config ; then
+      echo "Group definition sftp-chroot already set."
+      sleep 5
+      echo " "
+    else
+      echo "Will add Group definition sftp-chroot in sshd_config"
+      sleep 5
+      echo " "
+      cat /etc/ssh/sshd_config > /etc/ssh/sshd_config.new
+      echo "#Group definition sftp-chroot" >> /etc/ssh/sshd_config.new
+      echo "Match Group sftp_only" >> /etc/ssh/sshd_config.new
+      echo "    ChrootDirectory /data/jailroot/%u" >> /etc/ssh/sshd_config.new
+      echo "    X11Forwarding no" >> /etc/ssh/sshd_config.new
+      echo "    AllowTcpForwarding no" >> /etc/ssh/sshd_config.new
+      mv /etc/ssh/sshd_config.new /etc/ssh/sshd_config
+    fi
+    while true
+    do
+      echo "Do you want to add the promotion of internal sftp for group sftp_only to config-file: /etc/ssh/sshd_config?"
+      echo " "
+      sleep 5
+      echo "Consider, that a SSH-connection will not be able after adding this function"
+      echo " "
+      read -p "Whether type Yes or No: " addsftp
+      sftp=0
+      case "$addsftp" in
+        [yY]* ) echo "yes"
+          sftp=1
+          break;;
+        [nN]* )
+          echo "no"
+          break;;
+        *) echo "Invalid, please answer Yes or No";;
+      esac
+    done
+
+    if [ $sftp -eq 1 ]; then
+      echo "OK, will check if whether if its already set or not"
+      echo " "
+      sleep 2
+      cat /etc/ssh/sshd_config > /etc/ssh/sshd_config.new
+      grep -Ei --quiet '[[:space:]]ForceCommand[[:space:]]+internal-sftp' /etc/ssh/sshd_config
+      if [ $? -eq 0 ] ; then
+        echo "Internal SFTP is already forced in config file"
+        echo " "
+        sleep 5
+      else
+        echo "OK, I will add ForceCommand internal-sftp"
+        echo " "
+        echo "Will force enable internal SFTP for chroot config group sftp_only"
+        echo " "
+        sleep 3
+        echo "    ForceCommand internal-sftp" >> /etc/ssh/sshd_config.new
+        echo "/etc/ssh/sshd_config is configured now"
+        mv /etc/ssh/sshd_config.new /etc/ssh/sshd_config
+      fi
+    else
+      echo "OK, will go on without ForceCommand internal sftp"
+      echo " "
+    fi
+
+    # increase log-level of sshd_config no matter which level it was before
+    echo "Will set LogLevel of sshd_config to VERBOSE now"
+    sleep 5
+    echo " "
+    cat /etc/ssh/sshd_config > /etc/ssh/sshd_config.new
+    # RegEx search and replace everything behing "LogLevel" to "VERBOSE"
+    sed -ri 's/(LogLevel\s+)[^LogLevel]*$/\1 VERBOSE/' /etc/ssh/sshd_config.new
+    # afterwards making changes atomic by mv tmp file to live-config
+    mv /etc/ssh/sshd_config.new /etc/ssh/sshd_config
+
+    # finish changing sshd_config
+    # ask if you want to restart the ssh daemon
+    while true
+    do
+      echo "Do you want to restart the SSH daemon now to taking the changes live?"
+      echo " "
+      sleep 5
+      echo "Consider, that a SSH-restart may kill your connection to the Server"
+      sleep 5
+      echo " "
+      read -p "Whether type Yes/No/Dump (dump to show sshd-config) " restartssh
+      echo " "
+      rstrtssh=0
+      case "$restartssh" in
+        [yY]* ) echo "yes"
+          rstrtssh=1
+          break;;
+        [nN]* )
+          echo "no"
+          break;;
+        [dD]* )
+          cat /etc/ssh/sshd_config
+          ;;
+        *) echo "Invalid, please answer Yes or No";;
+      esac
+    done
+
+    if [ "$rstrtssh" -eq 1 ] ; then
+      echo "OK, I will restart the SSH-daemon now"
+      echo " "
+      sleep 5
+      /bin/bash /etc/init.d/ssh restart
+    else
+      echo "Well, then you have to restart the SSH-daemon on your own"
+      echo " "
+      sleep 5
+    fi
+  fi
+  #
+  #INIT-SCRIPT
+  # gets copied to /etc/init.d to control the jailroots
+  #
+  echo "--init-script for jailroots will be written and stored under /etc/init.d/mount-chroot-fs.sh"
+  echo " "
+  sleep 5
+  ################ TODo SPECIFY HEREDOC IN A WAY THE $VARS DIDNT GET INTERPRETED NOR THE GREP DOES
+  cat <<- 'UNTIL_IT_ENDS' > /root/mount-chroot-fs.sh
+  #!/bin/bash
+  ### BEGIN INIT INFO
+  # Provides:          mount-chroot-fs
+  # Required-Start:
+  # Required-Stop:
+  # Should-Start:
+  # Default-Start:     2 3 4 5
+  # Default-Stop:      0 1 6
+  # Short-Description: Mount needed filesystems in jailroots
+  # Description:       Search for chroots in $CHROOT_DIR and mount proc and dev fs
+  ### END INIT INFO
+
+  CHROOT_DIR=/data/jailroot
+
+  case "$1" in
+    start)
+      echo -n "Mount chroot-environment dependent file systems .."
+      find ${CHROOT_DIR} -mindepth 1 -maxdepth 1 -type d  | while read s;
+    do
+      echo "mount ${s}/proc";
+      mount -t proc none ${s}/proc
+      echo "mount ${s}/dev";
+      mount -o bind /dev ${s}/dev
+      echo "mount ${s}/dev/pts";
+      mount -o bind /dev/pts ${s}/dev/pts
+    done
+    ;;
+  stop)
+    echo -n "Unmount chroot-environment dependent file systems .."
+    find ${CHROOT_DIR} -mindepth 1 -maxdepth 1 -type d  | while read s;
+  do
+    echo "Kill processes ${s}";
+    for proc in `lsof -n | grep ${s} | awk '{print $2}' | sort | uniq`; do kill $proc; done
+    echo "unmount ${s}/proc";
+    umount ${s}/proc
+    echo "unmount ${s}/dev";
+    umount ${s}/dev
+    echo "unmount ${s}/dev/pts";
+    umount ${s}/dev/pts
+  done
+  ;;
+restart)
+  $0 stop
+  sleep 1
+  $0 start
+  ;;
+*)
+  echo "Usage: /etc/init.d/mount-chroot-fs.sh {start|stop|restart}"
+  exit 1
+esac
+exit 0
+UNTIL_IT_ENDS
+mv /root/mount-chroot-fs.sh /etc/init.d/
+chmod +x /etc/init.d/mount-chroot-fs.sh
+update-rc.d mount-chroot-fs.sh defaults
+echo "Your Server is now able to install an chroot-environment"
+echo " "
+echo "As well as stop/start configured chroots by init-script"
+sleep 5
+echo " "
+#clear
+}
+
+#
+# JAILROOT INSTALLATION
+# taking user input and creates new jailroot with given params using cdebootstrap
+#
+function standard_jailroot() {
+  if [ ! -d /data/jailroot ]
+  then
+    mkdir -p /data/jailroot
+  fi
+
+  echo "----Task: Create chroot environment in ${dir} with user ${user}"
+  echo " "
+  sleep 5
+  if [ "$ssh" == "yes" ]
+  then
+    echo "+ OpenSSH keypair"
+  elif [ "$ssh" == "no" ]
+  then
+    echo "Skip the SSH-Key creation. Going on with puTTY"
+    echo " "
+  else
+    echo "Error, choose yes/no for OpenSSH-Key creation"
+    echo " "
+    exit 7
+  fi
+
+  if [ "$putty" == "yes" ]
+  then
+    echo "+ puTTY key"
+  elif [ "$putty" == "no" ]
+  then
+    echo "Skip the puTTY-Key creation.Going on install the jailroot"
+    echo " "
+  else
+    echo "Error, choose yes/no for puTTY-Key creation"
+    echo " "
+    exit 7
+  fi
+
+  hash "cdebootstrap" 2>/dev/null
+  if [ $? -ne 0 ]; then
+    echo "cdebootstrap is not installed properly"
+    echo " "
+    exit 2
+  fi
+
+  test -d "${dir}" && { echo "${dir} already exists. Won't overwrite" ; exit 4; }
+  # cdebootstrap
+  echo "bootstrapping the system using cdebootstrap .."
+  echo " "
+  sleep 5
+  cdebootstrap --include=openssh-client,rsync --quiet --flavour=minimal "${os}" "${dir}" || exit 5;
+  user_creation "${dir}" "${user}" "${ssh}" "${putty}"
+
+  # monitoring
+  if [ "$ssh" == "yes" ];
+  then
+    echo "Creating monitoring script..."
+    echo " "
+    sleep 5
+    cat > "${dir}"/ssh-login-ok <<- EOF
+    #!/bin/bash
+    echo OK
+    EOF
+    chmod 0755 "${dir}"/ssh-login-ok
+    # jailroot monitoring ssh key, returns ok
+    echo "Inserting ssh key for monitoring .."
+    echo " "
+    sleep 5
+    echo "command=\"/ssh-login-ok\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEAuCAU9bUyUXLcOHKzZB2guUi7MttiS0lEGPan8B13oJMsaAQ2dl9j105h1JejRO0XyENnNHUpI1VNznNVgas+kZVs9McjKUYRt0cvN9qOtq+tBq2IICvYp6Sfp5eAyt3fTyO2hbmMFFDESpjjSBgKPYg/aTGOQxgYE7ag4HGKf7wJtBD7A7i4+4Hm9ILOnjR+y+XJ+iGAAiUkUrVTCU2UvZ0Eg4224ny9AwfN8Xg4T+HDaMgGYIhFhcnfgRtq69UljRzHKu9VDVf4DOp8dyCtaaMO4C+7eRE74cB2pf5F0g0LkVCfXJtTpnUHUmUCiVL4u3U+/8DZnkmUg4gHEMpC/w== jailroot-monitoring" >> /home/"${user}"/.ssh/authorized_keys
+  elif [ "$ssh" == "no" ]
+  then
+    echo "Skipping creation of monitorig script because the jailroot seems to be for testing"
+    sleep 5
+    echo " "
+  fi
+
+  # mount
+  echo "Mounting essential proc fs .."
+  sleep 5
+  echo " "
+  mount -t proc none "${dir}"/proc
+  mount -o bind /dev "${dir}"/dev
+  mount -o bind /dev/pts "${dir}"/dev/pts
+  # Additional Read-Write-User Creation
+  rw_creation
+  echo "Your jailroot has been created"
+  sleep 5
+  echo " "
+  #clear
+}
+
+#
+# UPDATE CHROOT ENVIRONMENT
+# updating the existing chroot OS to latest subscriptions
+#
+function update() {
+  echo "Start updating the jailroot"
+  echo " "
+  sleep 5
+  test ! -d "${dir}" && { echo "${dir} does not exist. Won't update" ; exit 8; }
+  chroot "${dir}" /bin/bash -c  "apt-get update -qq"
+  chroot "${dir}" /bin/bash -c  "apt-get upgrade -y -qq"
+  chroot "${dir}" /bin/bash -c  "apt-get install aptitude locales dialog vim -y -qq"
+  chroot "${dir}" /bin/bash -c  "locale-gen --purge en_US.UTF-8"
+  chroot "${dir}" /bin/bash -c  "echo -e 'LANG=en_US.UTF-8\nLANGUAGE=en_US:en\n' > /etc/default/locale"
+  echo "Your jailroot has been updated to the latest state of installed OS within"
+  sleep 5
+  #clear
+}
+
+#
+# UPGRADE CHROOT ENVIRONMENT
+# dist-upgrade the installed chroot OS
+#
+function upgrade() {
+  echo "Start upgrading the jailroot to debian ${release}"
+  echo " "
+  sleep 5
+  test ! -d "${dir}" && { echo "${dir} does not exist. Won't upgrade" ; exit 8; }
+  os_now=$(awk -F"[)(]+" '/VERSION=/ {print $2}' "${dir}"/etc/os-release)
+  chroot "${dir}" /bin/bash -c  "sed -i s/${os_now}/${release}/g '/etc/apt/sources.list'"
+  chroot "${dir}" /bin/bash -c  "apt-get update -qq"
+  chroot "${dir}" /bin/bash -c  "apt-get autoremove -y -qq && apt-get autoclean -y -qq"
+  chroot "${dir}" /bin/bash -c  "apt-get upgrade -y -qq"
+  chroot "${dir}" /bin/bash -c  "apt-get dist-upgrade -y -qq"
+  chroot "${dir}" /bin/bash -c  "apt-get install -f -y -qq"
+  chroot "${dir}" /bin/bash -c  "apt-get autoremove -y && apt-get autoclean -y -qq"
+  echo "Your chroot has been upgraded to $(cat "${dir}"/etc/issue)"
+  echo " "
+  sleep 5
+  #clear
+}
+
+#
+# DEPLOY-JAILROOT
+# configures an "deploy-jailroot" used by Application Managers
+#
+function deploy() {
+  echo "Start configuring the deploy jailroot"
+  echo " "
+  sleep 5
+  test ! -d "${dir}" && { echo "${dir} does not exist. Won't install deploy jailroot" ; exit 8; }
+  if [ "$ssh" == "yes" ]; then
+    chroot "${dir}" /bin/bash -c "chown -R ${user}. /home/${user}"
+    chroot "${dir}" /bin/bash -c "mkdir -p /home/${user}/.ssh"
+    cp /data/keystore/"${user}"'.'"$(hostname)".id_rsa "${dir}"/home/"${user}"/.ssh/
+    cp /data/keystore/"${user}"'.'"$(hostname)".id_rsa.pub "${dir}"/home/"${user}"/.ssh/
+    chroot "${dir}" /bin/bash -c "ln -s /home/${user}/.ssh/${user}'.'$(hostname).id_rsa /home/${user}/.ssh/id_rsa"
+    chroot "${dir}" /bin/bash -c "ln -s /home/${user}/.ssh/${user}'.'$(hostname).id_rsa.pub /home/${user}/.ssh/id_rsa.pub"
+    chroot "${dir}" /bin/bash -c "chown -R ${user}. /home/${user}/.ssh/id_rsa"
+    chroot "${dir}" /bin/bash -c "chown -R ${user}. /home/${user}/.ssh/id_rsa.pub"
+  fi
+
+  chroot "${dir}" /bin/bash -c  "apt-get update -qq"
+  chroot "${dir}" /bin/bash -c  "apt-get install screen subversion php5-cli less php5-curl php5-mysql php5-svn rsync sed unzip vim wget -y -qq"
+  chroot "${dir}" /bin/bash -c  "echo '#!/bin/bash' > /usr/local/bin/jsl"
+  chroot "${dir}" /bin/bash -c  "chmod +x /usr/local/bin/jsl"
+  echo "Your existing Jailroot has been upgraded to an deploy jailroot"
+  sleep 5
+  echo " "
+  if [ "$ssh" == "yes" ]; then
+    echo "Please do not forget to store the SSH-Keys on the Tracking Nodes"
+  else
+    echo "Please create an SSH-Keypair for the (host) user of the chroot and store the keys, within the users chroot home"
+    echo "Otherwise you'll not be able to gain connection to the tracking nodes"
+    echo "After creation, please do not forget to store the SSH-Keys on the Tracking Nodes"
+  fi
+
+  echo "Press any key to return to the main menu"
+  echo " "
+  read -s -n 1 input
+  if [[ "$input" = "" ]]; then
+    echo 'You pressed enter!'
+    return
+  else
+    echo "You pressed '$key'"
+    return
+  fi
+}
+
+#
+# REMOVE/DELETE SINGLE USER
+# self-explanatory
+#
+function remove_user() {
+  sleep 5
+  cp '/etc/security/chroot.conf' "/etc/security/chroot.conf.BAK_${d}"
+  userdel -rRf "$user"
+  if [ -d /home/"${user}" ] ; then
+    rm -rf /home/"${user}"
+  else
+    echo "The home of $user was deleted"
+    echo " "
+  fi
+  echo "Will remove entry in /etc/security/chroot.conf for ${user}"
+  echo " "
+  sleep 5
+  sed -i "/${user}\s/d" '/etc/security/chroot.conf'
+  echo "Take a look at /etc/security/chroot.conf now"
+  echo " "
+  cat /etc/security/chroot.conf
+  sleep 10
+  echo "Will remove user from /etc/ssh/sshd_config"
+  cp '/etc/ssh/sshd_config' "/etc/ssh/sshd_config.BAK_${d}"
+  if [ -f /etc/ssh/sshd_config.BAK_"${d}" ]; then
+    echo "Backup is in place"
+    echo "Proceed with deletion"
+  else
+    echo "Backup is missing, abort"
+    exit 8
+  fi
+  sed -i "/^#User definition ${user}$/,+3d" '/etc/ssh/sshd_config'
+  echo "Take a look at /etc/ssh/sshd_config now"
+  echo " "
+  cat /etc/ssh/sshd_config
+  sleep 10
+}
+
+#
+# REMOVE/DELETE ALL USERS
+# self-explanatory
+#
+function remove_all_user() {
+  chrootusers=($(grep "${dir}" /etc/security/chroot.conf|cut -d" " -f1))
+  echo "Going on and delete the configured users from host and chroot"
+  sleep 3
+  echo " "
+  echo "Be aware, that the jailroot entry in /etc/security/chroot.conf will be removed as well!"
+  sleep 3
+  echo " "
+  echo "Just to be sure, let me create an backup..."
+  echo " "
+  sleep 5
+  cp "/etc/security/chroot.conf" "/etc/security/chroot.conf.BAK_${d}"
+  for chrootuser in "${chrootusers[@]}"
+  do
+    userdel -rRf "$chrootuser"
+    if [ -d /home/"${chrootuser}" ] ; then
+      rm -rf /home/"${chrootuser}"
+    else
+      echo "The home of $chrootuser was deleted"
+      sleep 3
+      echo " "
+    fi
+
+    echo "Will remove entry in /etc/security/chroot.conf for ${chrootuser}"
+    echo " "
+    sleep 5
+    sed -i "/${chrootuser}/d" '/etc/security/chroot.conf'
+    echo "Take a look at /etc/security/chroot.conf now"
+    sleep 3
+    cat /etc/security/chroot.conf
+    sleep 10
+  done
+}
+
+#
+# REMOVE/DELETE ONE SSH-KEY
+# function to delete a ssh-key for exacly one user
+#
+function remove_key() {
+  while true
+  do
+    echo "Do you want to delete the created SSH-Keys for user $user?"
+    sleep 3
+    echo " "
+    echo "They're stored under /data/keystore/"
+    sleep 3
+    echo " "
+    read -p "Whether type Yes or No: " del
+    case "$del" in
+      [yY]* ) echo "yes"
+        start=1
+        break;;
+      [nN]* )
+        echo "no"
+        start=0
+        break;;
+      *) echo "invalid, please answer Yes or No";;
+    esac
+  done
+  if [ $start -eq 1 ]; then
+    find /data/keystore -type f -name"${user}".* -exec rm -f {} \;
+    echo "Deleted SSH-key files for $user"
+    echo " "
+    sleep 3
+  else
+    echo "OK, SSH-Keys will remain for user ${user}"
+    echo " "
+    sleep 3
+  fi
+}
+
+#
+# REMOVE/DELETE SSH-KEYS
+# "sub-function" to be able to delete all keys instead of only one
+#
+function remove_keys() {
+  while true
+  do
+    echo "Do you want to delete the created SSH-Keys?"
+    echo " "
+    sleep 3
+    echo "They're stored under /data/keystore/"
+    echo " "
+    sleep 3
+    read -p "Whether type Yes or No: " del
+    case "$del" in
+      [yY]* ) echo "yes"
+        start=1
+        break;;
+      [nN]* )
+        echo "no"
+        start=0
+        break;;
+      *) echo "invalid, please answer Yes or No";;
+    esac
+  done
+
+  if [ $start -eq 1 ]; then
+    chrootusers=($(grep "${dir}" /etc/security/chroot.conf.BAK_"${d}"|cut -d" " -f1))
+    for chrootuser in "${chrootusers[@]}"
+    do
+      find /data/keystore -type f -name"${chrootuser}".* -exec rm -f {} \;
+      echo "Deleted SSH-key files for $chrootuser"
+      echo " "
+      sleep 3
+    done
+    echo "Take a look at /etc/security/chroot.conf now"
+    echo " "
+    cat /etc/security/chroot.conf
+    sleep 10
+  else
+    echo "OK, SSH-Keys will remain for users configured"
+    sleep 3
+    echo " "
+    echo "Take a look at /etc/security/chroot.conf now"
+    echo " "
+    sleep 3
+    cat /etc/security/chroot.conf
+    sleep 10
+  fi
+}
+
+#
+# REMOVE/DELETE JAILROOT
+# unmount chroot, deletes all users configured to it, shred all remaining data
+#
+function remove() {
+  test ! -d "${dir}" && { echo "${dir} does not exist. Won't remove. Please tidy-up the /etc/security/chroot.conf file" ; exit 8; }
+  echo "Kill all running processes in chroot and remove it?"
+  echo " "
+  sleep 3
+  while true
+  do
+    read -p "Whether type Yes, No or Dry-run: " choice
+    case "$choice" in
+      [yY]* ) echo "yes"
+        sleep 5
+        echo "Start deletion of jailroot ${dir} with configured users"
+        echo " "
+        sleep 5
+        chroothome="${dir}"
+        FOUND=0
+        for ROOT in /proc/*/root; do
+          LINK=$(readlink "$ROOT")
+          if [ x"$LINK" != "x" ]; then
+            if [ x"${LINK:0:${#chroothome}}" = "x$chroothome" ]; then
+              # this process is in the chroot...
+              PID=$(basename "$(dirname "$ROOT")")
+              kill -9 "$PID"
+              FOUND=1
+            fi
+          fi
+        done
+        COUNT=0
+        while grep -q "$chroothome" /proc/mounts; do
+          COUNT=$((COUNT+1))
+          if [ "$COUNT" -ge 20 ]; then
+            echo "failed to umount $chroothome"
+            sleep 3
+            echo " "
+            if [ -x /usr/bin/lsof ]; then
+              /usr/bin/lsof "$chroothome"
+            fi
+            exit 1
+          fi
+          grep "$chroothome" /proc/mounts | \
+            cut -d\  -f2 | LANG=C sort -r | xargs -r -n 1 umount || sleep 1
+        done
+        echo "All fine, the chroot is unmounted."
+        echo " "
+        sleep 5
+        remove_all_user
+        echo "Will now securely delete the remaining data of the jailroot"
+        echo " "
+        sleep 5
+        ionice -c 3 /usr/bin/find "${chroothome}" -type f -print0 | xargs -0 rm -f
+        ionice -c 3 rm -rf "${dir}"
+        if [ ! -d "${chroothome}" ]; then
+          echo "${chroothome} does not exist. Removal was successfull"
+          remove_keys
+        else
+          echo "${chroothome} still exists. Removal failed!"
+        fi
+
+        sleep 5
+        break;;
+      [Dd]* ) echo "Dry-Run"
+        echo "Would unmount /proc, /dev/pts, /dev for ${chroothome}"
+        echo " "
+        sleep 5
+        echo "All fine, the chroot is unmounted. Going on the remove the users"
+        echo " "
+        sleep 5
+        echo "Would delete users:"
+        echo " "
+        while read
+        do
+          echo "Would delete user ${chrootuser}"
+          echo " "
+        done <<< /etc/security/chroot.conf
+
+        sleep 5
+        echo "Would Remove chroot.conf entry for ${chroothome}"
+        echo " "
+        sleep 5
+        d=$(date --date -s +%F)
+        echo "Would Remove ${chrootuser}'s Home-Directory on Host"
+        echo " "
+        echo "Would securely delete the remaining data of the jailroot"
+        echo " "
+        echo "${chroothome}"
+        echo " "
+        sleep 5
+        echo "Dry-Run removal finished"
+        echo " "
+        sleep 5
+        break;;
+      [nN]* ) echo "no"; break;;
+      *) echo "invalid, please answer Yes, No or Dry-run";;
+    esac
+  done
+}
+
+#
+# MENUE/USER INTERFACE
+# main function with user menu to choose single functions
+#
+function main() {
+  OPTIONS=("Make my new Server Jailroot compatible" "Install me an basic Jailroot" "Install an Deploy Jailroot" "Create me a new JR-User" "Update my Jailroot (OS)" "Upgrade my Jailroot (OS)" "Upgrade my JR to Deploy-Jailroot" "Remove an Jailroot" "Remove an User" "Remove all Users" "Help" "Quit")
+  #clear
+  select opt in "${OPTIONS[@]}"; do
+    if [ "$opt" = "Make my new Server Jailroot compatible" ]; then
+      basic_setup
+      #clear
+    elif [ "$opt" = "Install me an basic Jailroot" ]; then
+      path
+      user
+      rw
+      ssh
+      putty
+      os_version
+      os_release
+      #basic_setup
+      standard_jailroot
+      update
+      #clear
+    elif [ "$opt" = "Install an Deploy Jailroot" ]; then
+      path
+      user
+      rw
+      ssh
+      putty
+      os_version
+      os_release
+      #basic_setup
+      standard_jailroot
+      update
+      deploy
+      #clear
+    elif [ "$opt" = "Update my Jailroot (OS)" ]; then
+      choose_jr
+      update
+      #clear
+    elif [ "$opt" = "Upgrade my Jailroot (OS)" ]; then
+      choose_jr
+      os_version
+      os_release
+      update
+      upgrade
+      #clear
+    elif [ "$opt" = "Upgrade my JR to Deploy-Jailroot" ]; then
+      choose_jr
+      choose_user
+      deploy
+      #clear
+    elif [ "$opt" = "Create me a new JR-User" ]; then
+      choose_jr
+      user
+      ssh
+      putty
+      rw
+      user_creation "$dir" "$user" "$ssh" "$putty"
+      rw_creation
+    elif [ "$opt" = "Remove an Jailroot" ]; then
+      choose_jr
+      remove
+      #clear
+    elif [ "$opt" = "Remove an User" ]; then
+      choose_jr
+      choose_user
+      remove_user
+      remove_key
+      #clear
+    elif [ "$opt" = "Remove all Users" ]; then
+      choose_jr
+      remove_all_user
+      remove_keys
+      #clear
+    elif [ "$opt" = "Help" ]; then
+      print_usage
+    elif [ "$opt" = "Quit" ]; then
+      echo "Will exit now, bye"
+      exit 0
+    else
+      #clear
+      echo "bad option, try it again"
+      sleep 5
+      print_usage
+    fi
+  done
+}
+
+#
+# LOGGING AND MAIN PROGRAM
+# calls the main function and logs all output
+#
+main 2>&1 | tee -a /var/log/jailroot-toolkit_"${d}".log
+exit 0
+echo " "
+echo " "
